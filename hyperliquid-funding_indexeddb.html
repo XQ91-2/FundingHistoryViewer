@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperliquid Funding History</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0e1116;--card:#161b22;--b:#262d37;--t:#e6edf3;--m:#8b949e;--g:#3fb950;--r:#f85149;--a:#58a6ff}
+@media(prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#fff;--b:#d0d7de;--t:#1f2328;--m:#656d76;--g:#1a7f37;--r:#cf222e;--a:#0969da}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:14px system-ui,sans-serif;padding:16px}
+.wrap{max-width:1100px;margin:auto}h1{font-size:20px;margin:0 0 12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+select,input,button{background:var(--card);color:var(--t);border:1px solid var(--b);border-radius:6px;padding:7px 10px;font:inherit}
+button{cursor:pointer}button.on{border-color:var(--a);color:var(--a)}
+.card{background:var(--card);border:1px solid var(--b);border-radius:10px;padding:14px;margin-bottom:12px}
+.chart{height:380px;position:relative}
+table{width:100%;border-collapse:collapse}th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--b)}
+th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
+.pos{color:var(--g)}.neg{color:var(--r)}.m{color:var(--m)}
+.dd{position:relative}.dd .menu{display:none;position:absolute;z-index:5;top:100%;left:0;margin-top:4px;background:var(--card);border:1px solid var(--b);border-radius:8px;padding:8px;min-width:170px}
+.dd.open .menu{display:block}.menu label{display:flex;gap:8px;padding:4px 2px;cursor:pointer}
+#status{color:var(--m);margin-left:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Hyperliquid Funding History</h1>
+<div class="bar">
+  <input id="search" list="coins" placeholder="Search coin…" style="width:150px">
+  <datalist id="coins"></datalist>
+  <span id="pair" style="font-weight:600"></span>
+  <div id="ranges"></div>
+  <button id="mode">Hourly %</button>
+  <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
+  <button id="csv">CSV</button>
+  <button id="clr">Clear cache</button>
+  <span id="status"></span>
+</div>
+<div class="card"><div class="chart"><canvas id="c"></canvas></div></div>
+<div class="card"><table id="stats"></table></div>
+<div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts.</div>
+</div>
+<script>
+const API='https://api.hyperliquid.xyz/info', H=3600e3;
+const post=b=>fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()});
+const $=id=>document.getElementById(id);
+const RANGES={'7D':7,'30D':30,'90D':90,'1Y':365,'All':null};
+const AVGS={'3M':90,'6M':182,'1Y':365,'2Y':730,'3Y':1095,'4Y':1460,'5Y':1825};
+const SETS={raw:'Funding (avg per bucket)',ma7:'7D average',ma30:'30D average',ma90:'90D average'};
+const state={coin:'BTC',range:'90D',apr:false,sets:{raw:true,ma7:false,ma30:true,ma90:false}};
+const cache={};let chart,data=[];
+
+async function loadCoins(){
+  const [meta]=await post({type:'metaAndAssetCtxs'});
+  const names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort();
+  $('coins').innerHTML=names.map(n=>`<option value="${n}">`).join('');
+}
+const START=Date.UTC(2023,4,1);let info='';
+const DB=new Promise((res,rej)=>{try{const q=indexedDB.open('hl-funding',1);q.onupgradeneeded=()=>q.result.createObjectStore('coins');q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)}catch(e){rej(e)}});
+const idb=async(mode,fn)=>{const db=await DB;return new Promise((res,rej)=>{const tx=db.transaction('coins',mode),r=fn(tx.objectStore('coins'));tx.oncomplete=()=>res(r&&r.result);tx.onerror=()=>rej(tx.error)})};
+async function fetchAll(coin){
+  if(cache[coin])return cache[coin];
+  let rows=[],cached=false;
+  try{const rec=await idb('readonly',s=>s.get(coin));
+    if(rec){rows=Array.from(rec.times,(t,i)=>[t,rec.rates[i]]);cached=true}}catch(e){}
+  const last=rows.length?rows[rows.length-1][0]:START-1;
+  let fresh=[];
+  if(Date.now()-last>H)fresh=await fetchRange(coin,last+1);
+  const m=new Map(rows);fresh.forEach(r=>m.set(r[0],r[1]));
+  rows=[...m].sort((a,b)=>a[0]-b[0]);
+  info=cached?(fresh.length?`cache + ${fresh.length} new`:'from cache'):'fetched';
+  try{await idb('readwrite',s=>s.put({times:Float64Array.from(rows,r=>r[0]),rates:Float64Array.from(rows,r=>r[1]),updated:Date.now()},coin))}catch(e){info+=' (cache unavailable)'}
+  return cache[coin]=rows;
+}
+async function fetchRange(coin,start){
+  const now=Date.now(), win=500*H, jobs=[];
+  for(let s=start;s<now;s+=win)jobs.push(s);
+  let done=0,out=[];
+  const worker=async()=>{while(jobs.length){const s=jobs.shift();
+    for(let t=0;;t++){try{const r=await post({type:'fundingHistory',coin,startTime:s,endTime:s+win-1});out.push(...r);break}catch(e){if(t>3)throw e;await new Promise(r=>setTimeout(r,500*(t+1)))}}
+    $('status').textContent=`Loading… ${++done}`}};
+  await Promise.all(Array.from({length:6},worker));
+  return out.map(r=>[r.time,+r.fundingRate]);
+}
+const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+const fmt=r=>r==null?'—':(state.apr?(r*24*365*100).toFixed(2)+'%':(r*100).toFixed(5)+'%');
+function rolling(rows,days){const n=days*24,o=[];let sum=0;
+  rows.forEach((r,i)=>{sum+=r[1];if(i>=n)sum-=rows[i-n][1];o.push(i>=n-1?sum/n:null)});return o}
+
+function render(){
+  const rows=data; if(!rows.length)return;
+  const ma={ma7:rolling(rows,7),ma30:rolling(rows,30),ma90:rolling(rows,90)};
+  const days=RANGES[state.range], cut=days?Date.now()-days*86400e3:0;
+  const idx=rows.map((r,i)=>i).filter(i=>rows[i][0]>=cut);
+  const bucket=Math.max(1,Math.ceil(idx.length/700)), k=state.apr?24*365*100:100;
+  const labels=[],ds={raw:[],ma7:[],ma30:[],ma90:[]};
+  for(let i=0;i<idx.length;i+=bucket){const sl=idx.slice(i,i+bucket);
+    labels.push(new Date(rows[sl[0]][0]).toLocaleDateString(undefined,{year:'2-digit',month:'short',day:'numeric'})+(bucket<24&&days<=30?' '+new Date(rows[sl[0]][0]).getHours()+'h':''));
+    ds.raw.push(avg(sl.map(j=>rows[j][1]))*k);
+    for(const m of ['ma7','ma30','ma90']){const v=ma[m][sl[sl.length-1]];ds[m].push(v==null?null:v*k)}}
+  const cols={raw:'#8b949e',ma7:'#58a6ff',ma30:'#d29922',ma90:'#bc8cff'};
+  const sets=Object.keys(SETS).filter(s=>state.sets[s]).map(s=>({label:SETS[s],data:ds[s],borderColor:cols[s],backgroundColor:cols[s],borderWidth:s==='raw'?1:2,pointRadius:0,tension:.1,spanGaps:false}));
+  if(chart)chart.destroy();
+  chart=new Chart($('c'),{type:'line',data:{labels,datasets:sets},options:{responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
+    scales:{x:{ticks:{maxTicksLimit:10,color:'#8b949e'},grid:{display:false}},y:{ticks:{color:'#8b949e',callback:v=>v.toFixed(state.apr?0:4)+'%'},title:{display:true,text:state.apr?'APR':'% per hour',color:'#8b949e'}}},
+    plugins:{legend:{labels:{color:'#8b949e'}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y==null?'—':c.parsed.y.toFixed(state.apr?2:5)+'%'}`}}}}});
+  // stats table
+  const last=rows[rows.length-1][0], first=rows[0][0];
+  let h=`<tr><th>Window</th><th>Avg hourly</th><th>Avg APR</th><th>Positive</th></tr>`;
+  for(const [n,d] of Object.entries(AVGS)){
+    if(first>last-d*86400e3+H*24){h+=`<tr><td>${n}</td><td colspan=3 class="m">No history</td></tr>`;continue}
+    const w=rows.filter(r=>r[0]>=last-d*86400e3).map(r=>r[1]),a=avg(w);
+    h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*100).toFixed(5)}%</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td></tr>`}
+  $('stats').innerHTML=h;
+}
+async function load(coin){
+  state.coin=coin;$('pair').textContent=coin+'-USDC';$('status').textContent='Loading…';
+  try{data=await fetchAll(coin);$('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${new Date(data[0][0]).toLocaleDateString()} · ${info}`:'No data';render()}
+  catch(e){$('status').textContent='Error: '+e.message}
+}
+$('ranges').innerHTML=Object.keys(RANGES).map(r=>`<button data-r="${r}">${r}</button>`).join(' ');
+$('ranges').onclick=e=>{const r=e.target.dataset.r;if(!r)return;state.range=r;sync();render()};
+function sync(){document.querySelectorAll('#ranges button').forEach(b=>b.classList.toggle('on',b.dataset.r===state.range))}
+$('mode').onclick=()=>{state.apr=!state.apr;$('mode').textContent=state.apr?'APR %':'Hourly %';render()};
+$('menu').innerHTML=Object.entries(SETS).map(([k,v])=>`<label><input type="checkbox" data-s="${k}" ${state.sets[k]?'checked':''}>${v}</label>`).join('');
+$('menu').onchange=e=>{state.sets[e.target.dataset.s]=e.target.checked;render()};
+$('ddbtn').onclick=()=>$('dd').classList.toggle('open');
+document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
+$('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
+$('csv').onclick=()=>{if(!data.length)return;const t='time,fundingRate\n'+data.map(r=>new Date(r[0]).toISOString()+','+r[1]).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download=state.coin+'-funding.csv';a.click()};
+$('clr').onclick=async()=>{try{await idb('readwrite',s=>s.clear())}catch(e){}for(const k in cache)delete cache[k];$('status').textContent='Cache cleared';load(state.coin)};
+try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+sync();loadCoins().catch(()=>{});load('BTC');
+</script>
+</body>
+</html>
