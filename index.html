@@ -33,7 +33,8 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <div id="ranges"></div>
   <button id="mode">Hourly %</button>
   <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
-  <button id="csv">CSV</button>
+  <select id="tz"></select>
+<button id="csv">CSV</button>
   <button id="clr">Clear cache</button>
   <span id="status"></span>
 </div>
@@ -48,12 +49,13 @@ const $=id=>document.getElementById(id);
 const RANGES={'7D':7,'30D':30,'90D':90,'1Y':365,'All':null};
 const AVGS={'24H':1,'3D':3,'7D':7,'14D':14,'30D':30,'3M':90,'6M':182,'1Y':365,'2Y':730,'3Y':1095,'4Y':1460,'5Y':1825};
 const SETS={raw:'Funding (avg per bucket)',ma7:'7D average',ma30:'30D average',ma90:'90D average'};
-const state={coin:'BTC',range:'90D',apr:false,sets:{raw:true,ma7:false,ma30:true,ma90:false}};
+const TZS={local:'Local time',UTC:'UTC','America/New_York':'New York','Europe/London':'London','Europe/Berlin':'Berlin/Zurich','Asia/Singapore':'Singapore','Asia/Tokyo':'Tokyo'};
+const state={tz:'local',coin:'BTC',range:'90D',apr:false,sets:{raw:true,ma7:false,ma30:true,ma90:false}};
 const cache={};let chart,data=[];
 
 async function loadCoins(){
   const [meta]=await post({type:'metaAndAssetCtxs'});
-  let names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort(); try{const dexs=(await post({type:'perpDexs'})).filter(Boolean).map(d=>d.name);   const extra=await Promise.all(dexs.map(d=>post({type:'metaAndAssetCtxs',dex:d}).then(r=>r[0].universe.filter(u=>!u.isDelisted).map(u=>u.name)).catch(()=>[])));   names=names.concat(extra.flat().sort())}catch(e){}
+  const names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort();
   $('coins').innerHTML=names.map(n=>`<option value="${n}">`).join('');
 }
 const START=Date.UTC(2023,4,1);let info='';
@@ -83,6 +85,10 @@ async function fetchRange(coin,start){
   await Promise.all(Array.from({length:6},worker));
   return out.map(r=>[r.time,+r.fundingRate]);
 }
+const TZ=()=>state.tz==='local'?undefined:state.tz;
+const dstr=t=>new Date(t).toLocaleDateString(undefined,{year:'2-digit',month:'short',day:'numeric',timeZone:TZ()});
+const hstr=t=>new Date(t).toLocaleTimeString(undefined,{hour:'2-digit',hourCycle:'h23',timeZone:TZ()})+'h';
+const off=(t,z=state.tz)=>{const v=new Intl.DateTimeFormat('en-US',{timeZone:z==='local'?undefined:z,timeZoneName:'shortOffset'}).formatToParts(new Date(t)).find(x=>x.type==='timeZoneName').value.replace('GMT','');return '('+(v||'+0')+')'};
 const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
 const fmt=r=>r==null?'—':(state.apr?(r*24*365*100).toFixed(2)+'%':(r*100).toFixed(5)+'%');
 function rolling(rows,days){const n=days*24,o=[];let sum=0;
@@ -96,7 +102,7 @@ function render(){
   const bucket=Math.max(1,Math.ceil(idx.length/700)), k=state.apr?24*365*100:100;
   const labels=[],ds={raw:[],ma7:[],ma30:[],ma90:[]};
   for(let i=0;i<idx.length;i+=bucket){const sl=idx.slice(i,i+bucket);
-    labels.push(new Date(rows[sl[0]][0]).toLocaleDateString(undefined,{year:'2-digit',month:'short',day:'numeric'})+(bucket<24&&days<=30?' '+new Date(rows[sl[0]][0]).getHours()+'h':''));
+    labels.push(dstr(rows[sl[0]][0])+(bucket<24&&days<=30?' '+hstr(rows[sl[0]][0]):''));
     ds.raw.push(avg(sl.map(j=>rows[j][1]))*k);
     for(const m of ['ma7','ma30','ma90']){const v=ma[m][sl[sl.length-1]];ds[m].push(v==null?null:v*k)}}
   const cols={raw:'#8b949e',ma7:'#58a6ff',ma30:'#d29922',ma90:'#bc8cff'};
@@ -114,9 +120,10 @@ function render(){
     h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*100).toFixed(5)}%</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td></tr>`}
   $('stats').innerHTML=h;
 }
+function doneMsg(){$('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${new Date(data[0][0]).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short',timeZone:TZ()})} ${off(data[0][0])} · ${info}`:'No data'}
 async function load(coin){
   state.coin=coin;$('pair').textContent=coin+'-USDC';$('status').textContent='Loading…';
-  try{data=await fetchAll(coin);$('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${new Date(data[0][0]).toLocaleDateString()} · ${info}`:'No data';render()}
+  try{data=await fetchAll(coin);doneMsg();render()}
   catch(e){$('status').textContent='Error: '+e.message}
 }
 $('ranges').innerHTML=Object.keys(RANGES).map(r=>`<button data-r="${r}">${r}</button>`).join(' ');
@@ -125,6 +132,8 @@ function sync(){document.querySelectorAll('#ranges button').forEach(b=>b.classLi
 $('mode').onclick=()=>{state.apr=!state.apr;$('mode').textContent=state.apr?'APR %':'Hourly %';render()};
 $('menu').innerHTML=Object.entries(SETS).map(([k,v])=>`<label><input type="checkbox" data-s="${k}" ${state.sets[k]?'checked':''}>${v}</label>`).join('');
 $('menu').onchange=e=>{state.sets[e.target.dataset.s]=e.target.checked;render()};
+$('tz').innerHTML=Object.entries(TZS).map(([k,v])=>`<option value="${k}">${v} ${off(Date.now(),k)}</option>`).join('');
+$('tz').onchange=e=>{state.tz=e.target.value;doneMsg();render()};
 $('ddbtn').onclick=()=>$('dd').classList.toggle('open');
 document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
