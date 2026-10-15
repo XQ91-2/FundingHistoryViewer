@@ -53,7 +53,7 @@ const cache={};let chart,data=[];
 
 async function loadCoins(){
   const [meta]=await post({type:'metaAndAssetCtxs'});
-  const names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort();
+  let names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort(); try{const dexs=(await post({type:'perpDexs'})).filter(Boolean).map(d=>d.name);   const extra=await Promise.all(dexs.map(d=>post({type:'metaAndAssetCtxs',dex:d}).then(r=>r[0].universe.filter(u=>!u.isDelisted).map(u=>u.name)).catch(()=>[])));   names=names.concat(extra.flat().sort())}catch(e){}
   $('coins').innerHTML=names.map(n=>`<option value="${n}">`).join('');
 }
 const START=Date.UTC(2023,4,1);let info='';
