@@ -18,7 +18,7 @@ button{cursor:pointer}button.on{border-color:var(--a);color:var(--a)}
 table{width:100%;border-collapse:collapse}th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--b)}
 th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
 .pos{color:var(--g)}.neg{color:var(--r)}.m{color:var(--m)}
-.dd{position:relative}.dd .menu{display:none;position:absolute;z-index:5;top:100%;left:0;margin-top:4px;background:var(--card);border:1px solid var(--b);border-radius:8px;padding:8px;min-width:170px}
+.dd{position:relative}.dd .menu{display:none;position:absolute;z-index:5;top:100%;left:0;margin-top:4px;background:var(--card);border:1px solid var(--b);border-radius:8px;padding:8px;min-width:170px;max-height:320px;overflow:auto}
 .dd.open .menu{display:block}.menu label{display:flex;gap:8px;padding:4px 2px;cursor:pointer}
 #status{color:var(--m);margin-left:auto}
 </style>
@@ -33,6 +33,7 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <div id="ranges"></div>
   <button id="mode">Hourly %</button>
   <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
+  <select id="tz" title="Time zone"></select>
   <button id="csv">CSV</button>
   <button id="clr">Clear cache</button>
   <span id="status"></span>
@@ -47,13 +48,22 @@ const post=b=>fetch(API,{method:'POST',headers:{'Content-Type':'application/json
 const $=id=>document.getElementById(id);
 const RANGES={'7D':7,'30D':30,'90D':90,'1Y':365,'All':null};
 const AVGS={'24H':1,'3D':3,'7D':7,'14D':14,'30D':30,'3M':90,'6M':182,'1Y':365,'2Y':730,'3Y':1095,'4Y':1460,'5Y':1825};
-const SETS={raw:'Funding (avg per bucket)',ma7:'7D average',ma30:'30D average',ma90:'90D average'};
-const state={coin:'BTC',range:'90D',apr:false,sets:{raw:true,ma7:false,ma30:true,ma90:false}};
+const SETS={raw:'Funding (avg per bucket)',...Object.fromEntries(Object.keys(AVGS).map(k=>[k,`${k} average`]))};
+const PALETTE=['#58a6ff','#39c5cf','#3fb950','#d29922','#f0883e','#f85149','#db61a2','#bc8cff','#79c0ff','#56d364','#e3b341','#ff7b72'];
+const colorOf=k=>k==='raw'?'#8b949e':PALETTE[Object.keys(AVGS).indexOf(k)%PALETTE.length];
+const TZS={local:'Local time',UTC:'UTC','Europe/Zurich':'Zurich','Europe/London':'London','America/New_York':'New York','America/Los_Angeles':'Los Angeles','Asia/Singapore':'Singapore','Asia/Tokyo':'Tokyo'};
+const state={tz:'local',coin:'BTC',range:'90D',apr:false,sets:{raw:true,'30D':true}};
 const cache={};let chart,data=[];
 
 async function loadCoins(){
   const [meta]=await post({type:'metaAndAssetCtxs'});
-  let names=meta.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort(); try{const dexs=(await post({type:'perpDexs'})).filter(Boolean).map(d=>d.name);   const extra=await Promise.all(dexs.map(d=>post({type:'metaAndAssetCtxs',dex:d}).then(r=>r[0].universe.filter(u=>!u.isDelisted).map(u=>u.name)).catch(()=>[])));   names=names.concat(extra.flat().sort())}catch(e){}
+  const live=m=>m.universe.filter(u=>!u.isDelisted).map(u=>u.name).sort();
+  let names=live(meta);
+  try{ // HIP-3 builder markets (e.g. xyz:NVDA)
+    const dexs=(await post({type:'perpDexs'})).filter(Boolean).map(d=>d.name);
+    const extra=await Promise.all(dexs.map(d=>post({type:'metaAndAssetCtxs',dex:d}).then(r=>live(r[0])).catch(()=>[])));
+    names=names.concat(extra.flat().sort());
+  }catch(e){}
   $('coins').innerHTML=names.map(n=>`<option value="${n}">`).join('');
 }
 const START=Date.UTC(2023,4,1);let info='';
@@ -84,23 +94,36 @@ async function fetchRange(coin,start){
   return out.map(r=>[r.time,+r.fundingRate]);
 }
 const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
-const fmt=r=>r==null?'—':(state.apr?(r*24*365*100).toFixed(2)+'%':(r*100).toFixed(5)+'%');
+const TZ=()=>state.tz==='local'?undefined:state.tz;
+// UTC offset like "(+2)" or "(+5:30)" for a time zone at a given moment (follows summer/winter time)
+const off=(t,z=state.tz)=>{
+  const v=new Intl.DateTimeFormat('en-US',{timeZone:z==='local'?undefined:z,timeZoneName:'shortOffset'})
+    .formatToParts(new Date(t)).find(x=>x.type==='timeZoneName').value.replace('GMT','');
+  return `(${v||'+0'})`;
+};
+const ord=n=>{const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0])};
+// "15th Oct 2026, 20:00" in the selected time zone
+function fmtTime(ts,time=true){
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:TZ(),day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
+    .formatToParts(new Date(ts)).map(x=>[x.type,x.value]));
+  return `${ord(+p.day)} ${p.month} ${p.year}`+(time?`, ${p.hour}:${p.minute}`:'');
+}
 function rolling(rows,days){const n=days*24,o=[];let sum=0;
   rows.forEach((r,i)=>{sum+=r[1];if(i>=n)sum-=rows[i-n][1];o.push(i>=n-1?sum/n:null)});return o}
 
 function render(){
   const rows=data; if(!rows.length)return;
-  const ma={ma7:rolling(rows,7),ma30:rolling(rows,30),ma90:rolling(rows,90)};
+  const avgSets=Object.keys(AVGS).filter(s=>state.sets[s]);
+  const ma=Object.fromEntries(avgSets.map(s=>[s,rolling(rows,AVGS[s])]));
   const days=RANGES[state.range], cut=days?Date.now()-days*86400e3:0;
   const idx=rows.map((r,i)=>i).filter(i=>rows[i][0]>=cut);
   const bucket=Math.max(1,Math.ceil(idx.length/700)), k=state.apr?24*365*100:100;
-  const labels=[],ds={raw:[],ma7:[],ma30:[],ma90:[]};
+  const showTime=days&&days<=30, labels=[], ds={raw:[],...Object.fromEntries(avgSets.map(s=>[s,[]]))};
   for(let i=0;i<idx.length;i+=bucket){const sl=idx.slice(i,i+bucket);
-    labels.push(new Date(rows[sl[0]][0]).toLocaleDateString(undefined,{year:'2-digit',month:'short',day:'numeric'})+(bucket<24&&days<=30?' '+new Date(rows[sl[0]][0]).getHours()+'h':''));
+    labels.push(fmtTime(rows[sl[0]][0],showTime));
     ds.raw.push(avg(sl.map(j=>rows[j][1]))*k);
-    for(const m of ['ma7','ma30','ma90']){const v=ma[m][sl[sl.length-1]];ds[m].push(v==null?null:v*k)}}
-  const cols={raw:'#8b949e',ma7:'#58a6ff',ma30:'#d29922',ma90:'#bc8cff'};
-  const sets=Object.keys(SETS).filter(s=>state.sets[s]).map(s=>({label:SETS[s],data:ds[s],borderColor:cols[s],backgroundColor:cols[s],borderWidth:s==='raw'?1:2,pointRadius:0,tension:.1,spanGaps:false}));
+    for(const m of avgSets){const v=ma[m][sl[sl.length-1]];ds[m].push(v==null?null:v*k)}}
+  const sets=Object.keys(SETS).filter(s=>state.sets[s]).map(s=>({label:SETS[s],data:ds[s],borderColor:colorOf(s),backgroundColor:colorOf(s),borderWidth:s==='raw'?1:2,pointRadius:0,tension:.1,spanGaps:false}));
   if(chart)chart.destroy();
   chart=new Chart($('c'),{type:'line',data:{labels,datasets:sets},options:{responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
     scales:{x:{ticks:{maxTicksLimit:10,color:'#8b949e'},grid:{display:false}},y:{ticks:{color:'#8b949e',callback:v=>v.toFixed(state.apr?0:4)+'%'},title:{display:true,text:state.apr?'APR':'% per hour',color:'#8b949e'}}},
@@ -114,9 +137,12 @@ function render(){
     h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*100).toFixed(5)}%</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td></tr>`}
   $('stats').innerHTML=h;
 }
+function doneMsg(){
+  $('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${fmtTime(data[0][0])} ${off(data[0][0])} · ${info}`:'No data';
+}
 async function load(coin){
   state.coin=coin;$('pair').textContent=coin+'-USDC';$('status').textContent='Loading…';
-  try{data=await fetchAll(coin);$('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${new Date(data[0][0]).toLocaleDateString()} · ${info}`:'No data';render()}
+  try{data=await fetchAll(coin);doneMsg();render()}
   catch(e){$('status').textContent='Error: '+e.message}
 }
 $('ranges').innerHTML=Object.keys(RANGES).map(r=>`<button data-r="${r}">${r}</button>`).join(' ');
@@ -125,6 +151,8 @@ function sync(){document.querySelectorAll('#ranges button').forEach(b=>b.classLi
 $('mode').onclick=()=>{state.apr=!state.apr;$('mode').textContent=state.apr?'APR %':'Hourly %';render()};
 $('menu').innerHTML=Object.entries(SETS).map(([k,v])=>`<label><input type="checkbox" data-s="${k}" ${state.sets[k]?'checked':''}>${v}</label>`).join('');
 $('menu').onchange=e=>{state.sets[e.target.dataset.s]=e.target.checked;render()};
+$('tz').innerHTML=Object.entries(TZS).map(([k,v])=>`<option value="${k}">${v} ${off(Date.now(),k)}</option>`).join('');
+$('tz').onchange=e=>{state.tz=e.target.value;doneMsg();render()};
 $('ddbtn').onclick=()=>$('dd').classList.toggle('open');
 document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
