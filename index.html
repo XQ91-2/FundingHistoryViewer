@@ -31,7 +31,7 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <datalist id="coins"></datalist>
   <span id="pair" style="font-weight:600"></span>
   <div id="ranges"></div>
-  <button id="mode">Hourly %</button>
+  <button id="mode">APR %</button>
   <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
   <select id="tz" title="Time zone"></select>
   <button id="csv">CSV</button>
@@ -52,7 +52,7 @@ const SETS={raw:'Funding (avg per bucket)',...Object.fromEntries(Object.keys(AVG
 const PALETTE=['#58a6ff','#39c5cf','#3fb950','#d29922','#f0883e','#f85149','#db61a2','#bc8cff','#79c0ff','#56d364','#e3b341','#ff7b72'];
 const colorOf=k=>k==='raw'?'#8b949e':PALETTE[Object.keys(AVGS).indexOf(k)%PALETTE.length];
 const TZS={local:'Local time',UTC:'UTC','Europe/Zurich':'Zurich','Europe/London':'London','America/New_York':'New York','America/Los_Angeles':'Los Angeles','Asia/Singapore':'Singapore','Asia/Tokyo':'Tokyo'};
-const state={tz:'local',coin:'BTC',range:'90D',apr:false,sets:{raw:true,'30D':true}};
+const state={tz:'local',coin:'ETH',range:'7D',apr:true,sets:{raw:true,'30D':true}};
 const cache={};let chart,data=[];
 
 async function loadCoins(){
@@ -160,7 +160,7 @@ $('csv').onclick=()=>{if(!data.length)return;const t='time,fundingRate\n'+data.m
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download=state.coin+'-funding.csv';a.click()};
 $('clr').onclick=async()=>{try{await idb('readwrite',s=>s.clear())}catch(e){}for(const k in cache)delete cache[k];$('status').textContent='Cache cleared';load(state.coin)};
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
-sync();loadCoins().catch(()=>{});load('BTC');
+sync();loadCoins().catch(()=>{});load('ETH');
 </script>
 </body>
 </html>
