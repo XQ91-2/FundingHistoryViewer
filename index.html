@@ -35,6 +35,7 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
   <input id="notional" type="number" min="0" step="1000" placeholder="Notional $" title="Position size in USD" style="width:120px">
   <select id="tz" title="Time zone"></select>
+  <button id="refresh" title="Load new hourly data for this coin">Refresh</button>
   <button id="csv">CSV</button>
   <button id="clr">Clear cache</button>
   <span id="status"></span>
@@ -225,6 +226,8 @@ document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').cla
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
 $('csv').onclick=()=>{if(!data.length)return;const t='time,fundingRate\n'+data.map(r=>new Date(r[0]).toISOString()+','+r[1]).join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download=state.coin+'-funding.csv';a.click()};
+// Refresh: drop only the in-memory copy so fetchAll() re-reads IndexedDB and downloads just the hours missing since the last stored one
+$('refresh').onclick=()=>{delete cache[state.coin];load(state.coin)};
 $('clr').onclick=async()=>{try{await idb('readwrite',s=>s.clear())}catch(e){}for(const k in cache)delete cache[k];$('status').textContent='Cache cleared';load(state.coin)};
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
 sync();loadCoins().catch(()=>{});load('ETH');
