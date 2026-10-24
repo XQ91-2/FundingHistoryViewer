@@ -46,6 +46,13 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <input id="ltv" type="number" min="0" max="100" step="1" placeholder="LTV %" title="Borrowed amount as % of collateral value" style="width:90px">
   <input id="bapr" type="number" min="0" step="0.1" placeholder="Borrow APR %" title="Annual interest rate on the borrowed amount" style="width:120px">
 </div>
+<div class="bar" id="loan">
+  <span class="m">BTC loan (how much USD you can borrow):</span>
+  <input id="btcamt" type="number" min="0" step="0.01" placeholder="BTC amount" title="How much BTC you put up as collateral" style="width:120px">
+  <input id="btcpx" type="number" min="0" step="100" placeholder="BTC price $" title="Filled from Hyperliquid, you can overwrite it" style="width:120px">
+  <input id="btcltv" type="number" min="0" max="100" step="1" placeholder="LTV %" title="Loan as % of collateral value" style="width:90px">
+  <span id="loanout" style="font-weight:600"></span>
+</div>
 <div class="card" id="earn" style="display:none"></div>
 <div class="card"><table id="stats"></table></div>
 <div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts. Earned = sum of every hourly rate in the window × notional (fixed notional, mark price changes ignored). Spot hedge: borrow cost = collateral × LTV × APR × hours/8760, subtracted from funding.</div>
@@ -202,6 +209,17 @@ const EARN_IDS={n:'notional',c:'collat',l:'ltv',b:'bapr'};
 try{const sv=JSON.parse(localStorage.getItem('hl-earn')||'{}');for(const k in EARN_IDS)if(sv[k])$(EARN_IDS[k]).value=sv[k]}catch(e){}
 const saveEarn=()=>{try{localStorage.setItem('hl-earn',JSON.stringify(Object.fromEntries(Object.entries(EARN_IDS).map(([k,id])=>[k,$(id).value]))))}catch(e){}renderStats()};
 Object.values(EARN_IDS).forEach(id=>$(id).oninput=saveEarn);
+/* BTC LOAN: collateral value = BTC amount × BTC price; loan you receive = collateral value × LTV% */
+const LOAN_IDS={a:'btcamt',l:'btcltv'};
+function renderLoan(){
+  const v=(+$('btcamt').value||0)*(+$('btcpx').value||0), l=v*(+$('btcltv').value||0)/100;
+  $('loanout').innerHTML=v>0&&l>0?`Collateral ${usd(v)} → loan <span class="pos">${usd(l)}</span>`:'';
+}
+try{const sv=JSON.parse(localStorage.getItem('hl-loan')||'{}');for(const k in LOAN_IDS)if(sv[k])$(LOAN_IDS[k]).value=sv[k]}catch(e){}
+const saveLoan=()=>{try{localStorage.setItem('hl-loan',JSON.stringify(Object.fromEntries(Object.entries(LOAN_IDS).map(([k,id])=>[k,$(id).value]))))}catch(e){}renderLoan()};
+['btcamt','btcpx','btcltv'].forEach(id=>$(id).oninput=saveLoan);
+post({type:'allMids'}).then(m=>{if(m.BTC&&!$('btcpx').value)$('btcpx').value=Math.round(+m.BTC);renderLoan()}).catch(()=>{});
+renderLoan();
 $('ddbtn').onclick=()=>$('dd').classList.toggle('open');
 document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
