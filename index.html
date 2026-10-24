@@ -33,14 +33,16 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <div id="ranges"></div>
   <button id="mode">APR %</button>
   <div class="dd" id="dd"><button id="ddbtn">Datasets ▾</button><div class="menu" id="menu"></div></div>
+  <input id="notional" type="number" min="0" step="1000" placeholder="Notional $" title="Position size in USD" style="width:120px">
   <select id="tz" title="Time zone"></select>
   <button id="csv">CSV</button>
   <button id="clr">Clear cache</button>
   <span id="status"></span>
 </div>
 <div class="card"><div class="chart"><canvas id="c"></canvas></div></div>
+<div class="card" id="earn" style="display:none"></div>
 <div class="card"><table id="stats"></table></div>
-<div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts.</div>
+<div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts. Earned = sum of every hourly rate in the window × notional (fixed notional, mark price changes ignored).</div>
 </div>
 <script>
 const API='https://api.hyperliquid.xyz/info', H=3600e3;
@@ -94,6 +96,18 @@ async function fetchRange(coin,start){
   return out.map(r=>[r.time,+r.fundingRate]);
 }
 const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
+/* EARNINGS CALCULATION
+   Hyperliquid pays/charges funding every hour as: payment = notional × that hour's rate.
+   So the total over a window is the SUM of (notional × rate) over every hourly payment,
+   which equals notional × (sum of all hourly rates). We deliberately do NOT use
+   "average rate × hours" or an APR figure: the sum of the real hourly rates is exact,
+   including hours where the rate was negative or spiked.
+   Always calculated for a SHORT: positive rate = income, negative rate = cost.
+   Assumption: the notional stays constant (no compounding, mark price changes ignored). */
+const sumRates=(rows,from)=>{let s=0,n=0;for(let i=rows.length-1;i>=0&&rows[i][0]>=from;i--){s+=rows[i][1];n++}return{s,n}};
+const notional=()=>Math.max(0,+$('notional').value||0);
+const usd=v=>(v<0?'-':'')+'$'+Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const earnedFor=sumOfRates=>sumOfRates*notional();
 const TZ=()=>state.tz==='local'?undefined:state.tz;
 // UTC offset like "(+2)" or "(+5:30)" for a time zone at a given moment (follows summer/winter time)
 const off=(t,z=state.tz)=>{
@@ -128,13 +142,27 @@ function render(){
   chart=new Chart($('c'),{type:'line',data:{labels,datasets:sets},options:{responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
     scales:{x:{ticks:{maxTicksLimit:10,color:'#8b949e'},grid:{display:false}},y:{ticks:{color:'#8b949e',callback:v=>v.toFixed(state.apr?0:4)+'%'},title:{display:true,text:state.apr?'APR':'% per hour',color:'#8b949e'}}},
     plugins:{legend:{labels:{color:'#8b949e'}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y==null?'—':c.parsed.y.toFixed(state.apr?2:5)+'%'}`}}}}});
-  // stats table
+  renderStats();
+}
+function renderStats(){
+  const rows=data; if(!rows.length)return;
+  const N=notional();
   const last=rows[rows.length-1][0], first=rows[0][0];
-  let h=`<tr><th>Window</th><th>Avg hourly</th><th>Avg APR</th><th>Positive</th></tr>`;
+  // earnings summary for the currently displayed range
+  const days=RANGES[state.range], from=days?Date.now()-days*86400e3:0, {s:rs,n:rn}=sumRates(rows,from);
+  const box=$('earn');
+  if(N>0){
+    const e=earnedFor(rs), perDay=rn?e/(rn/24):0;
+    box.style.display='';
+    box.innerHTML=`<b>${state.range}</b> · ${usd(N)} short · <b class="${e>=0?'pos':'neg'}">${usd(e)}</b> over ${rn.toLocaleString()} hourly payments (${(rn/24).toFixed(1)} days) · ${usd(perDay)}/day · sum of hourly rates ${(rs*100).toFixed(4)}%`
+      +(days&&rn<days*24-24?` <span class="m">(only ${(rn/24).toFixed(1)} days of history exist)</span>`:'');
+  }else box.style.display='none';
+  let h=`<tr><th>Window</th><th>Avg APR</th><th>Positive</th><th>Earned</th></tr>`;
   for(const [n,d] of Object.entries(AVGS)){
     if(first>last-d*86400e3+H*24){h+=`<tr><td>${n}</td><td colspan=3 class="m">No history</td></tr>`;continue}
     const w=rows.filter(r=>r[0]>=last-d*86400e3).map(r=>r[1]),a=avg(w);
-    h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*100).toFixed(5)}%</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td></tr>`}
+    const sum=w.reduce((x,y)=>x+y,0), e=earnedFor(sum);
+    h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td><td class="${N>0?(e>=0?'pos':'neg'):'m'}">${N>0?usd(e):'—'}</td></tr>`}
   $('stats').innerHTML=h;
 }
 function doneMsg(){
@@ -153,6 +181,9 @@ $('menu').innerHTML=Object.entries(SETS).map(([k,v])=>`<label><input type="check
 $('menu').onchange=e=>{state.sets[e.target.dataset.s]=e.target.checked;render()};
 $('tz').innerHTML=Object.entries(TZS).map(([k,v])=>`<option value="${k}">${v} ${off(Date.now(),k)}</option>`).join('');
 $('tz').onchange=e=>{state.tz=e.target.value;doneMsg();render()};
+try{const sv=JSON.parse(localStorage.getItem('hl-earn')||'{}');if(sv.n)$('notional').value=sv.n}catch(e){}
+const saveEarn=()=>{try{localStorage.setItem('hl-earn',JSON.stringify({n:$('notional').value}))}catch(e){}renderStats()};
+$('notional').oninput=saveEarn;
 $('ddbtn').onclick=()=>$('dd').classList.toggle('open');
 document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
