@@ -1,5 +1,10 @@
 # FundingHistoryViewer
-Tool to view History of Fundingrate with a Indexed DB in your Browser. 
+Tool to view the fundingrate history with a IndexedDB in your browser. 
+
+Functions: 
+1. View the fundingrate history, in hourly and APR format
+2. CSV export of the fundingrate 
+3. Calculate earnings from fundingrate arbitrage with a spot recursive loop hedge 
 
 Current Support: 
 1. Hyperliquid 
