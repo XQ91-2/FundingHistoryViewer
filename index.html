@@ -40,9 +40,15 @@ th:first-child,td:first-child{text-align:left}th{color:var(--m);font-weight:500}
   <span id="status"></span>
 </div>
 <div class="card"><div class="chart"><canvas id="c"></canvas></div></div>
+<div class="bar" id="hedge">
+  <span class="m">Spot hedge (subtracts borrow cost):</span>
+  <input id="collat" type="number" min="0" step="1000" placeholder="Collateral $ (empty = notional)" title="Value of the spot collateral. Empty = same as notional" style="width:210px">
+  <input id="ltv" type="number" min="0" max="100" step="1" placeholder="LTV %" title="Borrowed amount as % of collateral value" style="width:90px">
+  <input id="bapr" type="number" min="0" step="0.1" placeholder="Borrow APR %" title="Annual interest rate on the borrowed amount" style="width:120px">
+</div>
 <div class="card" id="earn" style="display:none"></div>
 <div class="card"><table id="stats"></table></div>
-<div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts. Earned = sum of every hourly rate in the window × notional (fixed notional, mark price changes ignored).</div>
+<div class="m" style="font-size:12px">Data: Hyperliquid public API (fundingHistory). Funding is paid hourly. APR = hourly rate × 24 × 365. Positive = longs pay shorts. Earned = sum of every hourly rate in the window × notional (fixed notional, mark price changes ignored). Spot hedge: borrow cost = collateral × LTV × APR × hours/8760, subtracted from funding.</div>
 </div>
 <script>
 const API='https://api.hyperliquid.xyz/info', H=3600e3;
@@ -108,6 +114,14 @@ const sumRates=(rows,from)=>{let s=0,n=0;for(let i=rows.length-1;i>=0&&rows[i][0
 const notional=()=>Math.max(0,+$('notional').value||0);
 const usd=v=>(v<0?'-':'')+'$'+Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const earnedFor=sumOfRates=>sumOfRates*notional();
+/* SPOT HEDGE COST
+   The spot leg is bought with borrowed money, so it costs interest while the short earns funding.
+   debt = collateral × LTV%   (collateral empty = same as the notional)
+   interest over a window = debt × (borrow APR / 100) × (hours in window / 8760)
+   Net = funding earned − interest. Simple interest, constant debt and rate (no compounding). */
+const hedgeDebt=()=>{const c=+$('collat').value||notional();return Math.max(0,c*(+$('ltv').value||0)/100)};
+const borrowApr=()=>Math.max(0,+$('bapr').value||0);
+const borrowCost=hours=>hedgeDebt()*borrowApr()/100*hours/8760;
 const TZ=()=>state.tz==='local'?undefined:state.tz;
 // UTC offset like "(+2)" or "(+5:30)" for a time zone at a given moment (follows summer/winter time)
 const off=(t,z=state.tz)=>{
@@ -146,23 +160,26 @@ function render(){
 }
 function renderStats(){
   const rows=data; if(!rows.length)return;
-  const N=notional();
+  const N=notional(), D=hedgeDebt(), apr=borrowApr(), hedge=D>0&&apr>0;
   const last=rows[rows.length-1][0], first=rows[0][0];
-  // earnings summary for the currently displayed range
+  // summary for the currently displayed range
   const days=RANGES[state.range], from=days?Date.now()-days*86400e3:0, {s:rs,n:rn}=sumRates(rows,from);
   const box=$('earn');
   if(N>0){
-    const e=earnedFor(rs), perDay=rn?e/(rn/24):0;
+    const f=earnedFor(rs), c=hedge?borrowCost(rn):0, net=f-c, perDay=rn?net/(rn/24):0;
     box.style.display='';
-    box.innerHTML=`<b>${state.range}</b> · ${usd(N)} short · <b class="${e>=0?'pos':'neg'}">${usd(e)}</b> over ${rn.toLocaleString()} hourly payments (${(rn/24).toFixed(1)} days) · ${usd(perDay)}/day · sum of hourly rates ${(rs*100).toFixed(4)}%`
+    box.innerHTML=`<b>${state.range}</b> · ${usd(N)} short · funding <b class="${f>=0?'pos':'neg'}">${usd(f)}</b>`
+      +(hedge?` − borrow <b class="neg">${usd(c)}</b> <span class="m">(${usd(D)} debt @ ${apr}%)</span> = net <b class="${net>=0?'pos':'neg'}">${usd(net)}</b>`:'')
+      +` · ${rn.toLocaleString()} hourly payments (${(rn/24).toFixed(1)} days) · ${usd(perDay)}/day`
       +(days&&rn<days*24-24?` <span class="m">(only ${(rn/24).toFixed(1)} days of history exist)</span>`:'');
   }else box.style.display='none';
-  let h=`<tr><th>Window</th><th>Avg APR</th><th>Positive</th><th>Earned</th></tr>`;
+  let h=`<tr><th>Window</th><th>Avg APR</th><th>Positive</th><th>${hedge?'Funding':'Earned'}</th>${hedge?'<th>Borrow</th><th>Net</th>':''}</tr>`;
   for(const [n,d] of Object.entries(AVGS)){
-    if(first>last-d*86400e3+H*24){h+=`<tr><td>${n}</td><td colspan=3 class="m">No history</td></tr>`;continue}
+    if(first>last-d*86400e3+H*24){h+=`<tr><td>${n}</td><td colspan=${hedge?5:3} class="m">No history</td></tr>`;continue}
     const w=rows.filter(r=>r[0]>=last-d*86400e3).map(r=>r[1]),a=avg(w);
-    const sum=w.reduce((x,y)=>x+y,0), e=earnedFor(sum);
-    h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td><td class="${N>0?(e>=0?'pos':'neg'):'m'}">${N>0?usd(e):'—'}</td></tr>`}
+    const f=earnedFor(w.reduce((x,y)=>x+y,0)), c=hedge?borrowCost(w.length):0, net=f-c;
+    const cell=(v,cls)=>`<td class="${N>0?cls:'m'}">${N>0?usd(v):'—'}</td>`;
+    h+=`<tr><td>${n}</td><td class="${a>=0?'pos':'neg'}">${(a*24*365*100).toFixed(2)}%</td><td>${(w.filter(x=>x>0).length/w.length*100).toFixed(0)}%</td>${cell(f,f>=0?'pos':'neg')}${hedge?cell(c,'neg')+cell(net,net>=0?'pos':'neg'):''}</tr>`}
   $('stats').innerHTML=h;
 }
 function doneMsg(){
@@ -181,9 +198,10 @@ $('menu').innerHTML=Object.entries(SETS).map(([k,v])=>`<label><input type="check
 $('menu').onchange=e=>{state.sets[e.target.dataset.s]=e.target.checked;render()};
 $('tz').innerHTML=Object.entries(TZS).map(([k,v])=>`<option value="${k}">${v} ${off(Date.now(),k)}</option>`).join('');
 $('tz').onchange=e=>{state.tz=e.target.value;doneMsg();render()};
-try{const sv=JSON.parse(localStorage.getItem('hl-earn')||'{}');if(sv.n)$('notional').value=sv.n}catch(e){}
-const saveEarn=()=>{try{localStorage.setItem('hl-earn',JSON.stringify({n:$('notional').value}))}catch(e){}renderStats()};
-$('notional').oninput=saveEarn;
+const EARN_IDS={n:'notional',c:'collat',l:'ltv',b:'bapr'};
+try{const sv=JSON.parse(localStorage.getItem('hl-earn')||'{}');for(const k in EARN_IDS)if(sv[k])$(EARN_IDS[k]).value=sv[k]}catch(e){}
+const saveEarn=()=>{try{localStorage.setItem('hl-earn',JSON.stringify(Object.fromEntries(Object.entries(EARN_IDS).map(([k,id])=>[k,$(id).value]))))}catch(e){}renderStats()};
+Object.values(EARN_IDS).forEach(id=>$(id).oninput=saveEarn);
 $('ddbtn').onclick=()=>$('dd').classList.toggle('open');
 document.addEventListener('click',e=>{if(!$('dd').contains(e.target))$('dd').classList.remove('open')});
 $('search').onchange=e=>{const v=e.target.value.trim();if(v)load(v)};
