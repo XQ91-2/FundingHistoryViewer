@@ -8,3 +8,5 @@ Functions:
 
 Current Support: 
 1. Hyperliquid 
+
+Link to Github page: https://xq91-2.github.io/FundingHistoryViewer/
