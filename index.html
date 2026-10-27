@@ -194,7 +194,8 @@ function doneMsg(){
   $('status').textContent=data.length?`${data.length.toLocaleString()} hourly points since ${fmtTime(data[0][0])} ${off(data[0][0])} · ${info}`:'No data';
 }
 async function load(coin){
-  state.coin=coin;$('pair').textContent=coin+'-USDC';$('status').textContent='Loading…';
+state.coin=coin;try{localStorage.setItem('hl-last-coin',coin)}catch(e){}
+$('pair').textContent=coin+'-USDC';$('status').textContent='Loading…';
   try{data=await fetchAll(coin);doneMsg();render()}
   catch(e){$('status').textContent='Error: '+e.message}
 }
