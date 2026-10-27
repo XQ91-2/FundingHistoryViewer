@@ -230,7 +230,7 @@ $('csv').onclick=()=>{if(!data.length)return;const t='time,fundingRate\n'+data.m
 $('refresh').onclick=()=>{delete cache[state.coin];load(state.coin)};
 $('clr').onclick=async()=>{try{await idb('readwrite',s=>s.clear())}catch(e){}for(const k in cache)delete cache[k];$('status').textContent='Cache cleared';load(state.coin)};
 try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
-sync();loadCoins().catch(()=>{});load('ETH');
+let last='ETH';try{last=localStorage.getItem('hl-last-coin')||'ETH'}catch(e){} sync();loadCoins().catch(()=>{});load(last);
 </script>
 </body>
 </html>
